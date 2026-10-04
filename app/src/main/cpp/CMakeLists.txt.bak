@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(luauai_native)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ── llama.cpp (submodule em cpp/llama.cpp) ──────────────────────────────────
+set(LLAMA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp)
+
+set(LLAMA_SOURCES
+    ${LLAMA_DIR}/ggml.c
+    ${LLAMA_DIR}/ggml-alloc.c
+    ${LLAMA_DIR}/ggml-backend.c
+    ${LLAMA_DIR}/ggml-quants.c
+    ${LLAMA_DIR}/llama.cpp
+    ${LLAMA_DIR}/common/common.cpp
+    ${LLAMA_DIR}/common/sampling.cpp
+    ${LLAMA_DIR}/common/grammar-parser.cpp
+)
+
+add_library(llama_static STATIC ${LLAMA_SOURCES})
+
+target_include_directories(llama_static PUBLIC
+    ${LLAMA_DIR}
+    ${LLAMA_DIR}/common
+)
+
+target_compile_options(llama_static PRIVATE
+    -O3
+    -DNDEBUG
+    -DGGML_USE_K_QUANTS
+)
+
+# ── JNI bridge ──────────────────────────────────────────────────────────────
+add_library(luauai_jni SHARED
+    luauai_jni.cpp
+)
+
+target_include_directories(luauai_jni PRIVATE
+    ${LLAMA_DIR}
+    ${LLAMA_DIR}/common
+)
+
+target_link_libraries(luauai_jni
+    llama_static
+    android
+    log
+)

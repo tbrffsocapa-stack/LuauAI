@@ -1,0 +1,228 @@
+#include <jni.h>
+#include <android/log.h>
+#include <string>
+#include <vector>
+#include <memory>
+#include <atomic>
+#include <functional>
+
+#include "llama.h"
+#include "common.h"
+
+#define LOG_TAG "LuauAI_JNI"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// ── Estado global do modelo ─────────────────────────────────────────────────
+struct LlamaState {
+    llama_model*   model   = nullptr;
+    llama_context* ctx     = nullptr;
+    std::vector<llama_token> history_tokens;
+    std::atomic<bool> cancel{false};
+};
+
+static LlamaState g_state;
+
+// ── Callback de token para streaming ────────────────────────────────────────
+static JavaVM*    g_jvm        = nullptr;
+static jobject    g_callback   = nullptr;
+static jmethodID  g_onToken    = nullptr;
+
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+    g_jvm = vm;
+    llama_backend_init(false);
+    return JNI_VERSION_1_6;
+}
+
+extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM*, void*) {
+    llama_backend_free();
+}
+
+// ── loadModel ───────────────────────────────────────────────────────────────
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_loadModel(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring jModelPath,
+        jint    nCtx,
+        jint    nThreads)
+{
+    const char* path = env->GetStringUTFChars(jModelPath, nullptr);
+    LOGI("Carregando modelo: %s", path);
+
+    // Liberar modelo anterior se existir
+    if (g_state.ctx)   { llama_free(g_state.ctx);         g_state.ctx   = nullptr; }
+    if (g_state.model) { llama_free_model(g_state.model); g_state.model = nullptr; }
+    g_state.history_tokens.clear();
+
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 0; // CPU-only no Android
+
+    g_state.model = llama_load_model_from_file(path, mparams);
+    env->ReleaseStringUTFChars(jModelPath, path);
+
+    if (!g_state.model) {
+        LOGE("Falha ao carregar modelo");
+        return JNI_FALSE;
+    }
+
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx     = (uint32_t)nCtx;
+    cparams.n_threads = (uint32_t)nThreads;
+    cparams.n_batch   = 512;
+
+    g_state.ctx = llama_new_context_with_model(g_state.model, cparams);
+    if (!g_state.ctx) {
+        LOGE("Falha ao criar contexto");
+        llama_free_model(g_state.model);
+        g_state.model = nullptr;
+        return JNI_FALSE;
+    }
+
+    LOGI("Modelo carregado com sucesso. Ctx=%d threads=%d", nCtx, nThreads);
+    return JNI_TRUE;
+}
+
+// ── isModelLoaded ────────────────────────────────────────────────────────────
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_isModelLoaded(JNIEnv*, jobject) {
+    return (g_state.model != nullptr && g_state.ctx != nullptr) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ── freeModel ────────────────────────────────────────────────────────────────
+extern "C" JNIEXPORT void JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_freeModel(JNIEnv*, jobject) {
+    if (g_state.ctx)   { llama_free(g_state.ctx);         g_state.ctx   = nullptr; }
+    if (g_state.model) { llama_free_model(g_state.model); g_state.model = nullptr; }
+    g_state.history_tokens.clear();
+    LOGI("Modelo liberado");
+}
+
+// ── resetContext ─────────────────────────────────────────────────────────────
+extern "C" JNIEXPORT void JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_resetContext(JNIEnv*, jobject) {
+    g_state.history_tokens.clear();
+    if (g_state.ctx) llama_kv_cache_clear(g_state.ctx);
+    LOGI("Contexto resetado");
+}
+
+// ── cancelGeneration ─────────────────────────────────────────────────────────
+extern "C" JNIEXPORT void JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_cancelGeneration(JNIEnv*, jobject) {
+    g_state.cancel.store(true);
+}
+
+// ── generate (streaming via callback) ────────────────────────────────────────
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_generate(
+        JNIEnv*  env,
+        jobject  thiz,
+        jstring  jPrompt,
+        jint     maxTokens,
+        jfloat   temperature,
+        jfloat   topP,
+        jobject  tokenCallback)   // Interface TokenCallback { fun onToken(token: String) }
+{
+    if (!g_state.model || !g_state.ctx) {
+        return env->NewStringUTF("[ERRO] Modelo não carregado.");
+    }
+
+    const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
+    std::string prompt_str(prompt);
+    env->ReleaseStringUTFChars(jPrompt, prompt);
+
+    g_state.cancel.store(false);
+
+    // Tokenizar prompt
+    std::vector<llama_token> prompt_tokens(prompt_str.size() + 32);
+    int n_tokens = llama_tokenize(
+        g_state.model,
+        prompt_str.c_str(),
+        (int)prompt_str.size(),
+        prompt_tokens.data(),
+        (int)prompt_tokens.size(),
+        true,  // add BOS
+        false
+    );
+
+    if (n_tokens < 0) {
+        return env->NewStringUTF("[ERRO] Falha na tokenização.");
+    }
+    prompt_tokens.resize(n_tokens);
+
+    // Recuperar método onToken do callback
+    jclass cbClass  = nullptr;
+    jmethodID cbMid = nullptr;
+    if (tokenCallback) {
+        cbClass = env->GetObjectClass(tokenCallback);
+        cbMid   = env->GetMethodID(cbClass, "onToken", "(Ljava/lang/String;)V");
+    }
+
+    // Decodificar prompt no contexto
+    llama_kv_cache_clear(g_state.ctx);
+
+    if (llama_decode(g_state.ctx,
+            llama_batch_get_one(prompt_tokens.data(), (int)prompt_tokens.size(), 0, 0)) != 0) {
+        return env->NewStringUTF("[ERRO] Falha no decode inicial.");
+    }
+
+    std::string output;
+    output.reserve(2048);
+
+    llama_token eos = llama_token_eos(g_state.model);
+
+    // Sampling
+    llama_sampling_params sparams;
+    sparams.temp  = temperature;
+    sparams.top_p = topP;
+    sparams.top_k = 40;
+    sparams.repeat_penalty = 1.1f;
+
+    llama_sampling_context* sctx = llama_sampling_init(sparams);
+
+    int n_cur = (int)prompt_tokens.size();
+    int n_max = maxTokens;
+
+    for (int i = 0; i < n_max && !g_state.cancel.load(); i++) {
+        llama_token token = llama_sampling_sample(sctx, g_state.ctx, nullptr);
+        llama_sampling_accept(sctx, g_state.ctx, token, true);
+
+        if (token == eos) break;
+
+        // Converter token para texto
+        char buf[256];
+        int len = llama_token_to_piece(g_state.model, token, buf, sizeof(buf));
+        if (len > 0) {
+            std::string piece(buf, len);
+            output += piece;
+
+            // Callback de streaming
+            if (tokenCallback && cbMid) {
+                jstring jPiece = env->NewStringUTF(piece.c_str());
+                env->CallVoidMethod(tokenCallback, cbMid, jPiece);
+                env->DeleteLocalRef(jPiece);
+            }
+        }
+
+        // Preparar próximo token
+        llama_batch batch = llama_batch_get_one(&token, 1, n_cur, 0);
+        n_cur++;
+        if (llama_decode(g_state.ctx, batch) != 0) break;
+    }
+
+    llama_sampling_free(sctx);
+
+    return env->NewStringUTF(output.c_str());
+}
+
+// ── getModelInfo ─────────────────────────────────────────────────────────────
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_luauai_ai_engine_LlamaEngine_getModelInfo(JNIEnv* env, jobject) {
+    if (!g_state.model) return env->NewStringUTF("Nenhum modelo carregado");
+    std::string info = "Modelo: ";
+    info += llama_model_desc(g_state.model);
+    info += " | Params: ";
+    info += std::to_string(llama_model_n_params(g_state.model) / 1000000);
+    info += "M";
+    return env->NewStringUTF(info.c_str());
+}

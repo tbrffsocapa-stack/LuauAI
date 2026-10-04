@@ -1,0 +1,4 @@
+Project files organized. The native llama.cpp source is fetched by scripts/setup_termux.sh (tag b1600) before build. No APK build was run in this packaging environment because Android SDK/NDK are not installed here. Run the setup script in Termux to fetch build dependencies and compile.
+
+
+Repair pass 2026-10-03: Room downgraded to 2.6.1 to avoid Room KSP verifier native SQLite failure on Linux/aarch64; NDK pinned to 26.1.10909125; CMake pinned to 3.22.1; Termux setup aligned to Java 21 and NDK 26.1.10909125; machine-specific cmake.dir removed from local.properties.

@@ -1,0 +1,139 @@
+package com.luauai.ai.engine
+
+import com.luauai.ai.prompt.PromptBuilder
+import kotlinx.coroutines.flow.map
+import com.luauai.LuauAIApp
+import com.luauai.data.models.ChatMessage
+import com.luauai.data.models.Rule
+import com.luauai.data.models.SearchResult
+import com.luauai.ai.search.WebSearchEngine
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emitAll
+
+/**
+ * AIOrchestrator — fluxo central de processamento:
+ *
+ *   Usuário → Regras → Análise → Pesquisa Web (se necessário) → LLM local → Resposta
+ *
+ * Não faz nenhuma chamada para APIs de IA externas.
+ * O modelo LLM roda 100% on-device via LlamaEngine (JNI → llama.cpp).
+ */
+class AIOrchestrator(
+    private val llamaEngine: LlamaEngine      = LuauAIApp.instance.llamaEngine,
+    private val searchEngine: WebSearchEngine  = LuauAIApp.instance.webSearchEngine
+) {
+
+    /**
+     * Processa uma mensagem do usuário e emite a resposta token a token.
+     *
+     * @param userMessage  Texto do usuário
+     * @param rules        Regras definidas pelo usuário para este projeto
+     * @param history      Histórico da conversa
+     * @param maxTokens    Máximo de tokens a gerar
+     * @param temperature  Temperatura (criatividade)
+     */
+    fun process(
+        userMessage: String,
+        rules: List<Rule>,
+        history: List<ChatMessage>,
+        maxTokens: Int    = 1024,
+        temperature: Float = 0.7f
+    ): Flow<OrchestratorEvent> = flow {
+
+        // 1. Verificar se o modelo está carregado
+        if (!llamaEngine.loaded) {
+            emit(OrchestratorEvent.Error("Modelo não carregado. Vá em Configurações → Configurar Modelo."))
+            return@flow
+        }
+
+        // 2. Detectar tipo de operação
+        val operation = PromptBuilder.detectCodeOperation(userMessage)
+        emit(OrchestratorEvent.Status("Analisando pedido..."))
+
+        // 3. Pesquisa web (se necessária)
+        var searchResults: String? = null
+        var searchResultsList: List<SearchResult> = emptyList()
+
+        if (PromptBuilder.needsWebSearch(userMessage)) {
+            emit(OrchestratorEvent.Status("Pesquisando na web..."))
+            try {
+                val query = buildSearchQuery(userMessage, operation)
+                searchResultsList = searchEngine.search(query)
+                if (searchResultsList.isNotEmpty()) {
+                    searchResults = formatSearchResults(searchResultsList)
+                    emit(OrchestratorEvent.SearchResults(searchResultsList))
+                }
+            } catch (e: Exception) {
+                emit(OrchestratorEvent.Status("Pesquisa web indisponível, continuando sem ela..."))
+            }
+        }
+
+        // 4. Montar prompt com regras do usuário + histórico + pedido + pesquisa
+        emit(OrchestratorEvent.Status("Gerando resposta..."))
+        val prompt = PromptBuilder.build(
+            userRules     = rules,
+            history       = history,
+            userMessage   = userMessage,
+            searchResults = searchResults
+        )
+
+        // 5. Gerar resposta via modelo local (streaming)
+        emit(OrchestratorEvent.GenerationStart)
+        emitAll(
+            llamaEngine.generateFlow(
+                prompt      = prompt,
+                maxTokens   = maxTokens,
+                temperature = temperature
+            ).map { token -> OrchestratorEvent.Token(token) }
+        )
+        emit(OrchestratorEvent.GenerationEnd)
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private fun buildSearchQuery(message: String, operation: PromptBuilder.CodeOperation): String {
+        // Extrair termos relevantes da mensagem para a pesquisa
+        val keywords = mutableListOf<String>()
+
+        // Sempre incluir "Luau Roblox" se não estiver na mensagem
+        if (!message.lowercase().contains("luau") && !message.lowercase().contains("roblox")) {
+            keywords.add("Luau Roblox")
+        }
+
+        // Adicionar termos da mensagem (remover palavras comuns)
+        val stopWords = setOf(
+            "crie", "criar", "faça", "gere", "modifique", "corrija", "explique",
+            "um", "uma", "o", "a", "os", "as", "de", "do", "da", "no", "na",
+            "por", "para", "com", "em", "que", "se", "é", "e", "ou"
+        )
+        message.split(" ").forEach { word ->
+            if (word.length > 3 && word.lowercase() !in stopWords) {
+                keywords.add(word)
+            }
+        }
+
+        return keywords.take(6).joinToString(" ")
+    }
+
+    private fun formatSearchResults(results: List<SearchResult>): String {
+        val sb = StringBuilder()
+        results.take(3).forEachIndexed { i, r ->
+            sb.append("### Fonte ${i + 1}: ${r.title}\n")
+            sb.append("URL: ${r.url}\n")
+            sb.append("Data: ${r.date}\n")
+            sb.append("Trecho: ${r.snippet}\n\n")
+        }
+        return sb.toString()
+    }
+}
+
+// ── Eventos emitidos pelo orquestrador ──────────────────────────────────────
+sealed class OrchestratorEvent {
+    data class Status(val message: String)                : OrchestratorEvent()
+    data class SearchResults(val results: List<SearchResult>) : OrchestratorEvent()
+    object GenerationStart                                : OrchestratorEvent()
+    data class Token(val text: String)                    : OrchestratorEvent()
+    object GenerationEnd                                  : OrchestratorEvent()
+    data class Error(val message: String)                 : OrchestratorEvent()
+}
