@@ -43,7 +43,7 @@ class LlamaEngine {
         tokenCallback: TokenCallback?
     ): String
 
-    private external fun getModelInfo(): String
+    private external fun nativeGetModelInfo(): String
 
     // ── Interface de callback de token ───────────────────────────────────────
     interface TokenCallback {
@@ -55,7 +55,7 @@ class LlamaEngine {
         private set
 
     val loaded: Boolean get() = isModelLoaded()
-    val modelInfo: String get() = if (loaded) getModelInfo() else "Nenhum modelo carregado"
+    val modelInfo: String get() = if (loaded) nativeGetModelInfo() else "Nenhum modelo carregado"
 
     // ── Carregar modelo GGUF ─────────────────────────────────────────────────
     fun load(path: String, nCtx: Int = 2048, nThreads: Int = 4): Boolean {

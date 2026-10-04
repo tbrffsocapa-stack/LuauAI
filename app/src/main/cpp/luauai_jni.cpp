@@ -281,7 +281,7 @@ Java_com_luauai_ai_engine_LlamaEngine_generate(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_luauai_ai_engine_LlamaEngine_getModelInfo(
+Java_com_luauai_ai_engine_LlamaEngine_nativeGetModelInfo(
         JNIEnv * env,
         jobject) {
 
