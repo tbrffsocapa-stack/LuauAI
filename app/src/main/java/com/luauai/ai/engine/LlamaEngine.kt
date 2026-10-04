@@ -60,9 +60,13 @@ class LlamaEngine {
     // ── Carregar modelo GGUF ─────────────────────────────────────────────────
     fun load(path: String, nCtx: Int = 2048, nThreads: Int = 4): Boolean {
         val file = File(path)
+        Log.e(TAG, "CHEGOU NO LOAD: $path")
+        Log.e(TAG, "EXISTS: ${file.exists()}")
+        Log.e(TAG, "CAN_READ: ${file.canRead()}")
+        Log.e(TAG, "SIZE: ${if (file.exists()) file.length() else -1}")
+
         if (!file.exists()) {
-            Log.e(TAG, "Arquivo de modelo não encontrado: $path")
-            return false
+            throw RuntimeException("MODELO NÃO ENCONTRADO: $path")
         }
         val ok = loadModel(path, nCtx, nThreads)
         if (ok) modelPath = path
