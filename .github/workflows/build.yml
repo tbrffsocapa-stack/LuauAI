@@ -23,12 +23,14 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses
+
       - name: Install Android SDK and NDK
         run: |
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
           sdkmanager "ndk;26.1.10909125"
-          yes | sdkmanager --licenses
 
       - name: Make Gradle executable
         run: chmod +x gradlew
