@@ -1,14 +1,9 @@
-package com.luauai.ui.screens
+ackage com.luauai.ui.screens
 
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import java.io.File
-import androidx.compose.foundation.BorderStroke
-
-import androidx.compose.ui.graphics.Color
-
-import android.os.Environment
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,130 +16,227 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import android.content.Context
 import com.luauai.LuauAIApp
-import com.luauai.ui.theme.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 
-
-private val Context.dataStore by preferencesDataStore("luauai_prefs")
-private val MODEL_PATH_KEY = stringPreferencesKey("model_path")
+private const val TAG = "ModelSetup"
 
 data class ModelSetupState(
-    val modelPath: String      = "",
-    val isLoading: Boolean     = false,
-    val loadResult: String?    = null,
-    val modelInfo: String      = "",
-    val contextSize: Int       = 2048,
-    val threads: Int           = 4,
-    val temperature: Float     = 0.7f,
-    val maxTokens: Int         = 1024,
-    val availableFiles: List<String> = emptyList()
+    val modelPath: String = "",
+    val isLoading: Boolean = false,
+    val isSaved: Boolean = false,
+    val isLoaded: Boolean = false,
+    val loadResult: String? = null,
+    val modelInfo: String = "",
+    val contextSize: Int = 2048,
+    val threads: Int = 4,
+    val temperature: Float = 0.7f,
+    val maxTokens: Int = 1024
 )
 
 class ModelSetupViewModel : ViewModel() {
-    private val app    = LuauAIApp.instance
+
+    private val app = LuauAIApp.instance
     private val engine = app.llamaEngine
+
     private val _state = MutableStateFlow(ModelSetupState())
     val state: StateFlow<ModelSetupState> = _state.asStateFlow()
 
     init {
-        // Carregar caminho salvo
         viewModelScope.launch {
             app.dataStore.data.collect { prefs ->
                 val saved = prefs[MODEL_PATH_KEY] ?: ""
-                _state.update { it.copy(modelPath = saved) }
-            }
-        }
-        scanForModels()
-    }
 
-    /** Procura arquivos .gguf nos diretórios comuns do dispositivo */
-    private fun scanForModels() {
-        viewModelScope.launch {
-            val dirs = listOf(
-                Environment.getExternalStorageDirectory().absolutePath,
-                "${Environment.getExternalStorageDirectory()}/Download",
-                "${Environment.getExternalStorageDirectory()}/Models",
-                app.filesDir.absolutePath,
-                "${app.filesDir}/models"
-            )
-            val found = mutableListOf<String>()
-            dirs.forEach { dir ->
-                try {
-                    File(dir).walkTopDown().maxDepth(3).forEach { f ->
-                        if (f.extension == "gguf" && f.isFile) {
-                            found.add(f.absolutePath)
-                        }
+                if (saved.isNotEmpty()) {
+                    val file = File(saved)
+
+                    _state.update {
+                        it.copy(
+                            modelPath = saved,
+                            isSaved = file.exists()
+                        )
                     }
-                } catch (_: Exception) {}
+                }
             }
-            _state.update { it.copy(availableFiles = found) }
         }
     }
 
-    fun setModelPath(path: String) = _state.update { it.copy(modelPath = path) }
-    fun setContextSize(v: Int)     = _state.update { it.copy(contextSize = v) }
-    fun setThreads(v: Int)         = _state.update { it.copy(threads = v) }
-    fun setTemperature(v: Float)   = _state.update { it.copy(temperature = v) }
-    fun setMaxTokens(v: Int)       = _state.update { it.copy(maxTokens = v) }
+    fun setContextSize(value: Int) {
+        _state.update { it.copy(contextSize = value) }
+    }
+
+    fun setThreads(value: Int) {
+        _state.update { it.copy(threads = value) }
+    }
+
+    fun setTemperature(value: Float) {
+        _state.update { it.copy(temperature = value) }
+    }
+
+    fun setMaxTokens(value: Int) {
+        _state.update { it.copy(maxTokens = value) }
+    }
 
     fun importModel(uri: Uri) {
         viewModelScope.launch {
             try {
                 val resolver = app.contentResolver
 
-                val name = resolver.query(uri, null, null, null, null)?.use { c ->
-                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                val name = resolver.query(
+                    uri,
+                    null,
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    val index = cursor.getColumnIndex(
+                        android.provider.OpenableColumns.DISPLAY_NAME
+                    )
+
+                    if (index >= 0 && cursor.moveToFirst()) {
+                        cursor.getString(index)
+                    } else {
+                        null
+                    }
                 } ?: "model.gguf"
 
                 if (!name.lowercase().endsWith(".gguf")) {
                     _state.update {
-                        it.copy(loadResult = "❌ Selecione um arquivo .gguf")
+                        it.copy(
+                            loadResult = "❌ Selecione um arquivo .gguf"
+                        )
                     }
                     return@launch
                 }
 
-                val dir = File(app.filesDir, "models")
-                dir.mkdirs()
+                val modelsDir = File(app.filesDir, "models")
 
-                val target = File(dir, name)
+                if (!modelsDir.exists()) {
+                    modelsDir.mkdirs()
+                }
+
+                val target = File(modelsDir, name)
+
+                _state.update {
+                    it.copy(
+                        isLoading = true,
+                        loadResult = "📥 Importando modelo..."
+                    )
+                }
 
                 resolver.openInputStream(uri)?.use { input ->
                     target.outputStream().use { output ->
-                        input.copyTo(output, 1024 * 1024)
+                        input.copyTo(
+                            output,
+                            1024 * 1024
+                        )
                     }
-                } ?: throw RuntimeException("Não foi possível abrir o arquivo")
+                } ?: throw RuntimeException(
+                    "Não foi possível abrir o arquivo selecionado."
+                )
+
+                if (!target.exists() || target.length() <= 0) {
+                    throw RuntimeException(
+                        "O arquivo foi copiado, mas ficou vazio."
+                    )
+                }
 
                 _state.update {
                     it.copy(
                         modelPath = target.absolutePath,
-                        loadResult = "✅ Modelo importado: $name"
+                        isLoading = false,
+                        isSaved = false,
+                        isLoaded = false,
+                        modelInfo = "",
+                        loadResult =
+                            "✅ Modelo importado!\n" +
+                            "Tamanho: ${target.length() / (1024 * 1024)} MB"
                     )
                 }
 
-                app.dataStore.edit { prefs ->
-                    prefs[MODEL_PATH_KEY] = target.absolutePath
-                }
-
             } catch (e: Exception) {
-                android.util.Log.e("ModelSetup", "Erro ao importar modelo", e)
+                Log.e(TAG, "Erro ao importar modelo", e)
 
                 _state.update {
                     it.copy(
+                        isLoading = false,
                         loadResult =
-                            "❌ Erro ao importar: ${e.javaClass.simpleName}: ${e.message}"
+                            "❌ Erro ao importar:\n" +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    fun saveModel() {
+        viewModelScope.launch {
+            try {
+                val path = _state.value.modelPath.trim()
+
+                if (path.isEmpty()) {
+                    _state.update {
+                        it.copy(
+                            loadResult =
+                                "❌ Nenhum modelo selecionado."
+                        )
+                    }
+                    return@launch
+                }
+
+                val file = File(path)
+
+                if (!file.exists()) {
+                    _state.update {
+                        it.copy(
+                            isSaved = false,
+                            loadResult =
+                                "❌ O arquivo do modelo não existe."
+                        )
+                    }
+                    return@launch
+                }
+
+                if (!file.name.lowercase().endsWith(".gguf")) {
+                    _state.update {
+                        it.copy(
+                            isSaved = false,
+                            loadResult =
+                                "❌ O arquivo precisa ser .gguf."
+                        )
+                    }
+                    return@launch
+                }
+
+                app.dataStore.edit { prefs ->
+                    prefs[MODEL_PATH_KEY] = path
+                }
+
+                _state.update {
+                    it.copy(
+                        isSaved = true,
+                        loadResult =
+                            "💾 Modelo salvo!\n${file.name}"
+                    )
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro ao salvar modelo", e)
+
+                _state.update {
+                    it.copy(
+                        isSaved = false,
+                        loadResult =
+                            "❌ Erro ao salvar:\n" +
+                            "${e.javaClass.simpleName}: ${e.message}"
                     )
                 }
             }
@@ -153,39 +245,96 @@ class ModelSetupViewModel : ViewModel() {
 
     fun loadModel() {
         viewModelScope.launch {
-            val path = _state.value.modelPath.trim()
-            if (path.isEmpty()) {
-                _state.update { it.copy(loadResult = "❌ Caminho do modelo não definido") }
-                return@launch
-            }
-            _state.update { it.copy(isLoading = true, loadResult = null) }
-            val ok = try {
-                engine.load(path, _state.value.contextSize, _state.value.threads)
-            } catch (e: Exception) {
-                android.util.Log.e("ModelSetup", "Erro ao carregar modelo", e)
+            try {
+                val current = _state.value
+                val path = current.modelPath.trim()
+
+                if (path.isEmpty()) {
+                    _state.update {
+                        it.copy(
+                            loadResult =
+                                "❌ Nenhum modelo selecionado."
+                        )
+                    }
+                    return@launch
+                }
+
+                val file = File(path)
+
+                if (!file.exists()) {
+                    _state.update {
+                        it.copy(
+                            isSaved = false,
+                            isLoaded = false,
+                            loadResult =
+                                "❌ Modelo não encontrado:\n$path"
+                        )
+                    }
+                    return@launch
+                }
+
+                if (file.length() <= 0) {
+                    _state.update {
+                        it.copy(
+                            loadResult =
+                                "❌ O arquivo do modelo está vazio."
+                        )
+                    }
+                    return@launch
+                }
+
+                _state.update {
+                    it.copy(
+                        isLoading = true,
+                        loadResult = "🧠 Carregando modelo..."
+                    )
+                }
+
+                val ok = engine.load(
+                    path,
+                    current.contextSize,
+                    current.threads
+                )
+
+                if (ok) {
+
+                    app.dataStore.edit { prefs ->
+                        prefs[MODEL_PATH_KEY] = path
+                    }
+
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isSaved = true,
+                            isLoaded = true,
+                            loadResult =
+                                "✅ Modelo carregado com sucesso!",
+                            modelInfo = engine.modelInfo
+                        )
+                    }
+
+                } else {
+
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isLoaded = false,
+                            loadResult =
+                                "❌ O llama.cpp não conseguiu carregar o GGUF."
+                        )
+                    }
+                }
+
+            } catch (e: Throwable) {
+                Log.e(TAG, "Erro ao carregar modelo", e)
+
                 _state.update {
                     it.copy(
                         isLoading = false,
-                        loadResult = "❌ ERRO: ${e.javaClass.simpleName}: ${e.message}"
-                    )
-                }
-                return@launch
-            }
-            if (ok) {
-                // Salvar caminho
-                app.dataStore.edit { prefs -> prefs[MODEL_PATH_KEY] = path }
-                _state.update {
-                    it.copy(
-                        isLoading  = false,
-                        loadResult = "✅ Modelo carregado!",
-                        modelInfo  = engine.modelInfo
-                    )
-                }
-            } else {
-                _state.update {
-                    it.copy(
-                        isLoading  = false,
-                        loadResult = "❌ Falha ao carregar. Verifique o caminho e o arquivo GGUF."
+                        isLoaded = false,
+                        loadResult =
+                            "❌ ERRO AO CARREGAR:\n" +
+                            "${e.javaClass.simpleName}: ${e.message}"
                     )
                 }
             }
@@ -193,284 +342,340 @@ class ModelSetupViewModel : ViewModel() {
     }
 
     fun unloadModel() {
-        engine.free()
-        _state.update { it.copy(modelInfo = "", loadResult = "Modelo descarregado.") }
+        try {
+            engine.free()
+
+            _state.update {
+                it.copy(
+                    isLoaded = false,
+                    modelInfo = "",
+                    loadResult = "⏹️ Modelo descarregado."
+                )
+            }
+
+        } catch (e: Throwable) {
+            Log.e(TAG, "Erro ao descarregar modelo", e)
+
+            _state.update {
+                it.copy(
+                    loadResult =
+                        "❌ Erro ao descarregar: ${e.message}"
+                )
+            }
+        }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private val MODEL_PATH_KEY =
+    androidx.datastore.preferences.core.stringPreferencesKey(
+        "model_path"
+    )
+
 @Composable
 fun ModelSetupScreen(
-    onBack: () -> Unit,
-    vm: ModelSetupViewModel = viewModel()
+    onContinue: () -> Unit,
+    viewModel: ModelSetupViewModel = viewModel()
 ) {
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) vm.importModel(uri)
-    }
+    val state by viewModel.state.collectAsState()
 
+    val pickerLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                viewModel.importModel(uri)
+            }
+        }
 
-    val state by vm.state.collectAsState()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Configurar Modelo", color = LuauOnBackground) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, null, tint = LuauOnSurface)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = LuauSurface)
-            )
-        },
-        containerColor = LuauBackground
-    ) { padding ->
+        Text(
+            text = "🤖 Configurar LuauAI",
+            style = MaterialTheme.typography.headlineMedium
+        )
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        Text(
+            text =
+                "Importe seu modelo GGUF, salve-o e carregue-o para usar a IA localmente.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
         ) {
-
-            // ── Aviso importante ─────────────────────────────────────────────
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = LuauSecondary.copy(alpha = 0.15f)),
-                shape = RoundedCornerShape(14.dp)
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Info, null, tint = LuauSecondary)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Modelo GGUF Local",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = LuauSecondary)
-                    }
-                    Spacer(Modifier.height(8.dp))
+
+                Text(
+                    text = "Modelo",
+                    style = MaterialTheme.typography.titleLarge
+                )
+
+                if (state.modelPath.isNotEmpty()) {
+
                     Text(
-                        "Coloque um arquivo .gguf no armazenamento do seu dispositivo.\n\n" +
-                        "Modelos recomendados (baixe no HuggingFace):\n" +
-                        "• Llama-3.2-1B-Instruct-Q4_K_M.gguf (~800MB)\n" +
-                        "• Phi-3-mini-4k-instruct-q4.gguf (~2.2GB)\n" +
-                        "• Gemma-2-2b-it-Q4_K_M.gguf (~1.5GB)\n\n" +
-                        "⚠️ Modelos maiores são mais lentos mas mais precisos.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = LuauOnSurface
+                        text = "📦 ${File(state.modelPath).name}",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+
+                    Text(
+                        text = state.modelPath,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                } else {
+
+                    Text(
+                        text = "Nenhum modelo selecionado.",
+                        style = MaterialTheme.typography.bodyMedium
                     )
                 }
-            }
 
-            // ── Arquivos encontrados ──────────────────────────────────────────
-            if (state.availableFiles.isNotEmpty()) {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = LuauSurface),
-                    shape  = RoundedCornerShape(14.dp)
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text("Arquivos encontrados",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = LuauOnBackground)
-                        Spacer(Modifier.height(10.dp))
-                        state.availableFiles.forEach { path ->
-                            Card(
-                                onClick = { vm.setModelPath(path) },
-                                colors  = CardDefaults.cardColors(
-                                    containerColor = if (state.modelPath == path)
-                                        LuauPrimary.copy(alpha = 0.15f)
-                                    else
-                                        LuauSurfaceVariant
-                                ),
-                                shape   = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
-                            ) {
-                                Row(modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Storage, null,
-                                        tint     = if (state.modelPath == path) LuauPrimary else LuauOnSurface,
-                                        modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        path.substringAfterLast("/"),
-                                        style    = MaterialTheme.typography.labelMedium,
-                                        color    = if (state.modelPath == path) LuauPrimary else LuauOnBackground,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── Caminho manual ───────────────────────────────────────────────
-            Card(
-                colors = CardDefaults.cardColors(containerColor = LuauSurface),
-                shape  = RoundedCornerShape(14.dp)
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text("Caminho do Modelo",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = LuauOnBackground)
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value         = state.modelPath,
-                        onValueChange = vm::setModelPath,
-                        modifier      = Modifier.fillMaxWidth(),
-                        label         = { Text("Caminho completo do arquivo .gguf") },
-                        placeholder   = {
-                            Text("/storage/emulated/0/Download/modelo.gguf",
-                                color = LuauOnSurface.copy(alpha = 0.4f), fontSize = 11.sp)
-                        },
-                        singleLine = true,
-                        colors     = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor   = LuauPrimary,
-                            unfocusedBorderColor = LuauSurfaceVariant,
-                            focusedTextColor     = LuauOnBackground,
-                            unfocusedTextColor   = LuauOnBackground,
-                            focusedLabelColor    = LuauPrimary
-                        )
-                    )
-                }
-            }
-
-            // ── Parâmetros ───────────────────────────────────────────────────
-            Card(
-                colors = CardDefaults.cardColors(containerColor = LuauSurface),
-                shape  = RoundedCornerShape(14.dp)
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text("Parâmetros", style = MaterialTheme.typography.titleMedium,
-                        color = LuauOnBackground)
-                    Spacer(Modifier.height(12.dp))
-
-                    SliderParam(
-                        label    = "Contexto: ${state.contextSize} tokens",
-                        value    = state.contextSize.toFloat(),
-                        range    = 512f..4096f,
-                        steps    = 6,
-                        onChange = { vm.setContextSize(it.toInt()) }
-                    )
-                    SliderParam(
-                        label    = "Threads: ${state.threads}",
-                        value    = state.threads.toFloat(),
-                        range    = 1f..8f,
-                        steps    = 6,
-                        onChange = { vm.setThreads(it.toInt()) }
-                    )
-                    SliderParam(
-                        label    = "Temperatura: ${"%.1f".format(state.temperature)}",
-                        value    = state.temperature,
-                        range    = 0.1f..1.5f,
-                        steps    = 13,
-                        onChange = { vm.setTemperature(it) }
-                    )
-                    SliderParam(
-                        label    = "Máx. tokens: ${state.maxTokens}",
-                        value    = state.maxTokens.toFloat(),
-                        range    = 128f..2048f,
-                        steps    = 14,
-                        onChange = { vm.setMaxTokens(it.toInt()) }
-                    )
-                }
-            }
-
-            // ── Resultado ────────────────────────────────────────────────────
-            if (state.loadResult != null) {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (state.loadResult!!.startsWith("✅"))
-                            Color(0xFF1A2E1A) else Color(0xFF2E1A1A)
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(state.loadResult!!,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (state.loadResult!!.startsWith("✅"))
-                                Color(0xFF6A9955) else LuauError)
-                        if (state.modelInfo.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(state.modelInfo,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = LuauOnSurface)
-                        }
-                    }
-                }
-            }
-
-            // ── Botões ───────────────────────────────────────────────────────
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(
+                Button(
                     onClick = {
-                        filePicker.launch(
+                        pickerLauncher.launch(
                             arrayOf("application/octet-stream", "*/*")
                         )
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    Icon(
+                        Icons.Default.FolderOpen,
+                        contentDescription = null
+                    )
+
+                    Spacer(Modifier.width(8.dp))
+
                     Text("📁 Selecionar modelo GGUF")
                 }
 
-Button(
-                    onClick  = { vm.loadModel() },
-                    enabled  = !state.isLoading && state.modelPath.isNotEmpty(),
-                    modifier = Modifier.weight(1f),
-                    colors   = ButtonDefaults.buttonColors(
-                        containerColor = LuauPrimary,
-                        contentColor   = LuauOnPrimary
-                    ),
-                    shape = RoundedCornerShape(12.dp)
+                Button(
+                    onClick = {
+                        viewModel.saveModel()
+                    },
+                    enabled =
+                        state.modelPath.isNotEmpty() &&
+                        !state.isLoading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Default.Save,
+                        contentDescription = null
+                    )
+
+                    Spacer(Modifier.width(8.dp))
+
+                    Text("💾 Salvar Modelo")
+                }
+
+                Button(
+                    onClick = {
+                        viewModel.loadModel()
+                    },
+                    enabled =
+                        state.modelPath.isNotEmpty() &&
+                        !state.isLoading,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     if (state.isLoading) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp, color = LuauOnPrimary)
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp
+                        )
                     } else {
-                        Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = null
+                        )
                     }
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (state.isLoading) "Carregando..." else "Carregar Modelo")
+
+                    Spacer(Modifier.width(8.dp))
+
+                    Text(
+                        if (state.isLoading)
+                            "Carregando..."
+                        else
+                            "🧠 Carregar Modelo"
+                    )
                 }
-                OutlinedButton(
-                    onClick = { vm.unloadModel() },
-                    shape   = RoundedCornerShape(12.dp),
-                    colors  = ButtonDefaults.outlinedButtonColors(contentColor = LuauError),
-                    border  = BorderStroke(1.dp, LuauError.copy(alpha = 0.5f))
+
+                if (state.isLoaded) {
+
+                    Button(
+                        onClick = onContinue,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            Icons.Default.ArrowForward,
+                            contentDescription = null
+                        )
+
+                        Spacer(Modifier.width(8.dp))
+
+                        Text("Continuar para o LuauAI")
+                    }
+                }
+
+                if (state.isSaved) {
+                    Text(
+                        text = "💾 Salvo no armazenamento interno",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+
+                if (state.isLoaded) {
+                    Text(
+                        text = "🟢 Modelo carregado",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+
+                Text(
+                    text = "⚙️ Parâmetros",
+                    style = MaterialTheme.typography.titleLarge
+                )
+
+                Text(
+                    text = "Contexto: ${state.contextSize}"
+                )
+
+                Slider(
+                    value = state.contextSize.toFloat(),
+                    onValueChange = {
+                        viewModel.setContextSize(
+                            it.toInt()
+                        )
+                    },
+                    valueRange = 512f..4096f,
+                    steps = 6
+                )
+
+                Text(
+                    text = "Threads: ${state.threads}"
+                )
+
+                Slider(
+                    value = state.threads.toFloat(),
+                    onValueChange = {
+                        viewModel.setThreads(
+                            it.toInt()
+                        )
+                    },
+                    valueRange = 1f..8f,
+                    steps = 6
+                )
+
+                Text(
+                    text =
+                        "Temperatura: %.2f"
+                            .format(state.temperature)
+                )
+
+                Slider(
+                    value = state.temperature,
+                    onValueChange = {
+                        viewModel.setTemperature(it)
+                    },
+                    valueRange = 0.1f..1.5f
+                )
+
+                Text(
+                    text =
+                        "Máximo de tokens: ${state.maxTokens}"
+                )
+
+                Slider(
+                    value = state.maxTokens.toFloat(),
+                    onValueChange = {
+                        viewModel.setMaxTokens(
+                            it.toInt()
+                        )
+                    },
+                    valueRange = 128f..4096f,
+                    steps = 30
+                )
+            }
+        }
+
+        state.modelInfo
+            .takeIf { it.isNotBlank() }
+            ?.let { info ->
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text(
+                            text = "📊 Informações do modelo",
+                            style =
+                                MaterialTheme.typography.titleMedium
+                        )
+
+                        Spacer(
+                            Modifier.height(8.dp)
+                        )
+
+                        Text(
+                            text = info,
+                            fontSize = 13.sp
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
-        }
-    }
-}
+        state.loadResult
+            ?.let { result ->
 
-@Composable
-private fun SliderParam(
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    steps: Int,
-    onChange: (Float) -> Unit
-) {
-    Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = LuauOnSurface)
-        Slider(
-            value         = value,
-            onValueChange = onChange,
-            valueRange    = range,
-            steps         = steps,
-            colors        = SliderDefaults.colors(
-                thumbColor        = LuauPrimary,
-                activeTrackColor  = LuauPrimary,
-                inactiveTrackColor = LuauSurfaceVariant
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(
+                        text = result,
+                        modifier = Modifier.padding(16.dp),
+                        fontSize = 14.sp
+                    )
+                }
+            }
+
+        OutlinedButton(
+            onClick = {
+                viewModel.unloadModel()
+            },
+            enabled = state.isLoaded,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                Icons.Default.Stop,
+                contentDescription = null
             )
-        )
+
+            Spacer(Modifier.width(8.dp))
+
+            Text("Descarregar Modelo")
+        }
     }
 }

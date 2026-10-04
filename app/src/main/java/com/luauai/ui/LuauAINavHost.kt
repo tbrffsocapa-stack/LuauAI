@@ -94,7 +94,15 @@ fun LuauAINavHost() {
         }
 
         composable(Screen.ModelSetup.route) {
-            ModelSetupScreen(onBack = { nav.popBackStack() })
+            ModelSetupScreen(
+                onContinue = {
+                    nav.navigate(Screen.Home.route) {
+                        popUpTo(Screen.ModelSetup.route) {
+                            inclusive = true
+                        }
+                    }
+                }
+            )
         }
     }
 }
