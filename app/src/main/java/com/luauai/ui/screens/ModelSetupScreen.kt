@@ -1,5 +1,9 @@
 package com.luauai.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import java.io.File
 import androidx.compose.foundation.BorderStroke
 
 import androidx.compose.ui.graphics.Color
@@ -95,6 +99,58 @@ class ModelSetupViewModel : ViewModel() {
     fun setTemperature(v: Float)   = _state.update { it.copy(temperature = v) }
     fun setMaxTokens(v: Int)       = _state.update { it.copy(maxTokens = v) }
 
+    fun importModel(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                val resolver = app.contentResolver
+
+                val name = resolver.query(uri, null, null, null, null)?.use { c ->
+                    val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+                } ?: "model.gguf"
+
+                if (!name.lowercase().endsWith(".gguf")) {
+                    _state.update {
+                        it.copy(loadResult = "❌ Selecione um arquivo .gguf")
+                    }
+                    return@launch
+                }
+
+                val dir = File(app.filesDir, "models")
+                dir.mkdirs()
+
+                val target = File(dir, name)
+
+                resolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output ->
+                        input.copyTo(output, 1024 * 1024)
+                    }
+                } ?: throw RuntimeException("Não foi possível abrir o arquivo")
+
+                _state.update {
+                    it.copy(
+                        modelPath = target.absolutePath,
+                        loadResult = "✅ Modelo importado: $name"
+                    )
+                }
+
+                app.dataStore.edit { prefs ->
+                    prefs[MODEL_PATH_KEY] = target.absolutePath
+                }
+
+            } catch (e: Exception) {
+                android.util.Log.e("ModelSetup", "Erro ao importar modelo", e)
+
+                _state.update {
+                    it.copy(
+                        loadResult =
+                            "❌ Erro ao importar: ${e.javaClass.simpleName}: ${e.message}"
+                    )
+                }
+            }
+        }
+    }
+
     fun loadModel() {
         viewModelScope.launch {
             val path = _state.value.modelPath.trim()
@@ -148,6 +204,13 @@ fun ModelSetupScreen(
     onBack: () -> Unit,
     vm: ModelSetupViewModel = viewModel()
 ) {
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.importModel(uri)
+    }
+
+
     val state by vm.state.collectAsState()
 
     Scaffold(
@@ -342,7 +405,18 @@ fun ModelSetupScreen(
 
             // ── Botões ───────────────────────────────────────────────────────
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
+                                Button(
+                    onClick = {
+                        filePicker.launch(
+                            arrayOf("application/octet-stream", "*/*")
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("📁 Selecionar modelo GGUF")
+                }
+
+Button(
                     onClick  = { vm.loadModel() },
                     enabled  = !state.isLoading && state.modelPath.isNotEmpty(),
                     modifier = Modifier.weight(1f),
