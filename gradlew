@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/bin/sh
 # LuauAI Gradle launcher for Termux; does not require gradle-wrapper.jar.
 set -eu
 APP_HOME="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
