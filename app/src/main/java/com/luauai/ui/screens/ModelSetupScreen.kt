@@ -35,7 +35,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
+
 
 private val Context.dataStore by preferencesDataStore("luauai_prefs")
 private val MODEL_PATH_KEY = stringPreferencesKey("model_path")
@@ -207,7 +207,7 @@ fun ModelSetupScreen(
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) viewModel.importModel(uri)
+        if (uri != null) vm.importModel(uri)
     }
 
 
