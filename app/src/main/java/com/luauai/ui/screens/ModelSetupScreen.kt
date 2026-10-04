@@ -103,7 +103,18 @@ class ModelSetupViewModel : ViewModel() {
                 return@launch
             }
             _state.update { it.copy(isLoading = true, loadResult = null) }
-            val ok = engine.load(path, _state.value.contextSize, _state.value.threads)
+            val ok = try {
+                engine.load(path, _state.value.contextSize, _state.value.threads)
+            } catch (e: Exception) {
+                android.util.Log.e("ModelSetup", "Erro ao carregar modelo", e)
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        loadResult = "❌ ERRO: ${e.javaClass.simpleName}: ${e.message}"
+                    )
+                }
+                return@launch
+            }
             if (ok) {
                 // Salvar caminho
                 app.dataStore.edit { prefs -> prefs[MODEL_PATH_KEY] = path }
