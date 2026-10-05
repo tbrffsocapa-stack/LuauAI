@@ -1,4 +1,4 @@
-ackage com.luauai.ui.screens
+package com.luauai.ui.screens
 
 import android.net.Uri
 import android.util.Log
