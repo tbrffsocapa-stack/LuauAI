@@ -1,6 +1,7 @@
 package com.luauai.ui.screens
 
 import android.net.Uri
+import android.content.Context
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.datastore.preferences.preferencesDataStore
 import com.luauai.LuauAIApp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +30,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 private const val TAG = "ModelSetup"
+private val Context.dataStore by preferencesDataStore("luauai_prefs")
 
 data class ModelSetupState(
     val modelPath: String = "",
