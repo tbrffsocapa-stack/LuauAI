@@ -68,6 +68,67 @@ class ModelSetupViewModel : ViewModel() {
                             isSaved = file.exists()
                         )
                     }
+
+                    if (file.exists() &&
+                        file.length() > 0 &&
+                        !state.value.isLoaded &&
+                        !state.value.isLoading
+                    ) {
+                        loadSavedModel(saved)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun loadSavedModel(path: String) {
+        viewModelScope.launch {
+            try {
+                _state.update {
+                    it.copy(
+                        isLoading = true,
+                        loadResult = "🧠 Carregando modelo salvo..."
+                    )
+                }
+
+                val ok = engine.load(
+                    path,
+                    state.value.contextSize,
+                    state.value.threads
+                )
+
+                if (ok) {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isSaved = true,
+                            isLoaded = true,
+                            loadResult = "✅ Modelo carregado automaticamente!",
+                            modelInfo = engine.modelInfo
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isLoaded = false,
+                            loadResult =
+                                "⚠️ Modelo encontrado, mas o llama.cpp não conseguiu carregá-lo."
+                        )
+                    }
+                }
+
+            } catch (e: Throwable) {
+                Log.e(TAG, "Erro ao carregar modelo salvo", e)
+
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        isLoaded = false,
+                        loadResult =
+                            "⚠️ Erro ao carregar modelo salvo:\n" +
+                            "${e.javaClass.simpleName}: ${e.message}"
+                    )
                 }
             }
         }
@@ -468,7 +529,8 @@ fun ModelSetupScreen(
                     },
                     enabled =
                         state.modelPath.isNotEmpty() &&
-                        !state.isLoading,
+                        !state.isLoading &&
+                        !state.isLoaded,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(
